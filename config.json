@@ -1,0 +1,12 @@
+{
+    "machine_id": "186-072-757",
+    "machine_name": "Worthy_Writer",
+    "access_code": "123456",
+    "access_code_hash": "d7cf47637a2d8bac25047b5103954dcbb06969ee0e86bf170ae463bafdc9a53f",
+    "salt": "1b718587444ef779abfbdede3ef6db4b",
+    "port": 8080,
+    "host": "0.0.0.0",
+    "target_fps": 30,
+    "jpeg_quality": 75,
+    "enable_clipboard": true
+}

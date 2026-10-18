@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>MyRemotePC — Ultra-Low Latency Remote Access</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="bg-glow"></div>
+
+  <!-- Connect / Auth Modal -->
+  <div class="auth-container" id="authOverlay">
+    <div class="auth-card">
+      <div class="brand-header">
+        <img src="/static/favicon.svg" alt="MyRemotePC Logo" class="brand-logo">
+        <div class="brand-title">
+          <h1>MyRemotePC</h1>
+          <p>Ultra-Low Latency Remote Access</p>
+        </div>
+      </div>
+
+      <div class="host-badge-box">
+        <div class="host-info-col">
+          <span class="host-info-label">Host Machine</span>
+          <span class="host-info-val" id="displayHostName">
+            <span class="status-dot"></span> Loading...
+          </span>
+        </div>
+        <div class="host-info-col" style="text-align: right;">
+          <span class="host-info-label">Machine ID</span>
+          <span class="host-info-val" id="displayMachineId">--- --- ---</span>
+        </div>
+      </div>
+
+      <form id="authForm" onsubmit="return false;">
+        <div class="form-group">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <label class="form-label" for="accessCodeInput" style="margin-bottom: 0;">Security Access Code</label>
+            <span id="quickFillBtn" style="font-size: 11px; color: #60a5fa; cursor: pointer; background: rgba(59, 130, 246, 0.15); padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(59, 130, 246, 0.3);">
+              Default: <strong>123456</strong>
+            </span>
+          </div>
+          <div class="input-wrapper">
+            <input 
+              type="password" 
+              id="accessCodeInput" 
+              class="input-field" 
+              placeholder="Enter host access code (123456)" 
+              autocomplete="current-password"
+              value="123456"
+              required 
+              autofocus
+            >
+          </div>
+        </div>
+
+        <button type="submit" id="connectBtn" class="auth-btn">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M5 12h14M12 5l7 7-7 7" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Connect to Remote Desktop
+        </button>
+
+        <p class="error-msg" id="authErrorMsg">Invalid access code. Please try again.</p>
+      </form>
+    </div>
+  </div>
+
+  <!-- Main Remote Desktop Viewport -->
+  <div class="viewport-container" id="viewport">
+    <canvas id="remoteCanvas"></canvas>
+
+    <!-- Top Floating Toolbar -->
+    <div class="top-toolbar" id="topToolbar">
+      <!-- Connection Indicator Pill -->
+      <div class="toolbar-pill">
+        <span class="status-dot" id="liveDot"></span>
+        <span id="hostLabelShort">Host</span>
+        <span>•</span>
+        <strong id="fpsVal">0 FPS</strong>
+      </div>
+
+      <div class="toolbar-divider"></div>
+
+      <!-- Monitor Switcher -->
+      <div style="position: relative;">
+        <button class="tool-btn" id="monitorBtn" data-tooltip="Switch Monitor">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="3" width="20" height="14" rx="2"/>
+            <line x1="8" y1="21" x2="16" y2="21"/>
+            <line x1="12" y1="17" x2="12" y2="21"/>
+          </svg>
+        </button>
+        <div class="dropdown-menu" id="monitorDropdown"></div>
+      </div>
+
+      <!-- Quality Selector -->
+      <div style="position: relative;">
+        <button class="tool-btn" id="qualityBtn" data-tooltip="Stream Quality">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+          </svg>
+        </button>
+        <div class="dropdown-menu" id="qualityDropdown">
+          <button class="dropdown-item" data-quality="90" data-fps="30">High Quality (90% / 30fps)</button>
+          <button class="dropdown-item active" data-quality="75" data-fps="30">Balanced (75% / 30fps)</button>
+          <button class="dropdown-item" data-quality="60" data-fps="60">High Performance (60% / 60fps)</button>
+          <button class="dropdown-item" data-quality="40" data-fps="20">Low Bandwidth (40% / 20fps)</button>
+        </div>
+      </div>
+
+      <!-- Special Keys Menu -->
+      <div style="position: relative;">
+        <button class="tool-btn" id="keysBtn" data-tooltip="Special Keys">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="4" width="20" height="16" rx="2"/>
+            <path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M6 16h12"/>
+          </svg>
+        </button>
+        <div class="dropdown-menu" id="keysDropdown">
+          <button class="dropdown-item" id="btnWinKey">⊞ Windows Key</button>
+          <button class="dropdown-item" id="btnShowDesktop">⊞ + D Show Desktop</button>
+          <button class="dropdown-item" id="btnLockScreen">🔒 Lock Workstation</button>
+          <button class="dropdown-item" id="btnCtrlAltDel">⚡ Task Manager / Security</button>
+        </div>
+      </div>
+
+      <!-- Clipboard Sync -->
+      <button class="tool-btn" id="clipboardBtn" data-tooltip="Clipboard Sync">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+          <rect x="8" y="2" width="8" height="4" rx="1"/>
+        </svg>
+      </button>
+
+      <!-- Stats HUD Toggle -->
+      <button class="tool-btn" id="statsBtn" data-tooltip="Toggle Diagnostics (F2)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="18" y1="20" x2="18" y2="10"/>
+          <line x1="12" y1="20" x2="12" y2="4"/>
+          <line x1="6" y1="20" x2="6" y2="14"/>
+        </svg>
+      </button>
+
+      <!-- Fullscreen Toggle -->
+      <button class="tool-btn" id="fullscreenBtn" data-tooltip="Toggle Fullscreen">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+        </svg>
+      </button>
+
+      <div class="toolbar-divider"></div>
+
+      <!-- Disconnect -->
+      <button class="tool-btn danger" id="disconnectBtn" data-tooltip="Disconnect">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M18.36 6.64a9 9 0 1 1-12.73 0M12 2v10"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Live Performance Stats HUD -->
+    <div class="stats-hud hidden" id="statsHud">
+      <div class="stats-row">
+        <span>FPS:</span>
+        <span class="stats-val" id="hudFps">0</span>
+      </div>
+      <div class="stats-row">
+        <span>RTT Latency:</span>
+        <span class="stats-val" id="hudLatency">0 ms</span>
+      </div>
+      <div class="stats-row">
+        <span>Bandwidth:</span>
+        <span class="stats-val" id="hudBandwidth">0 KB/s</span>
+      </div>
+      <div class="stats-row">
+        <span>Resolution:</span>
+        <span class="stats-val" id="hudResolution">0x0</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Clipboard Modal -->
+  <div class="modal-overlay" id="clipboardModal">
+    <div class="modal-box">
+      <h3 class="modal-title">Sync Remote Clipboard</h3>
+      <textarea id="clipboardText" class="clipboard-textarea" placeholder="Type or paste text to send to remote computer..."></textarea>
+      <div class="modal-actions">
+        <button class="btn-secondary" id="clipFetchRemoteBtn">Fetch from Remote</button>
+        <button class="btn-secondary" id="clipCloseBtn">Close</button>
+        <button class="btn-primary" id="clipSendRemoteBtn">Send to Remote</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

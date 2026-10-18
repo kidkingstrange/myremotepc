@@ -1,0 +1,27 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.spec
+
+# Logs and runtime databases
+*.log
+.system_generated/
+
+# OS generated
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Local configs with custom credentials (keep config.example.json tracked)
+*.local.json
