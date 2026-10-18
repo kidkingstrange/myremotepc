@@ -1,7 +1,7 @@
 """
 High-performance Win32 screen capture engine for MyRemotePC.
 Uses direct GDI BitBlt with persistent memory device contexts and DIBits.
-Supports multi-monitor enumeration, selective display capture, and adaptive compression.
+Includes multi-monitor enumeration, dynamic resolution change detection, and adaptive compression.
 """
 
 import ctypes
@@ -14,7 +14,6 @@ from PIL import Image
 user32 = ctypes.windll.user32
 gdi32 = ctypes.windll.gdi32
 
-# Set DPI awareness so coordinate mapping is 1:1 with native pixels
 try:
     user32.SetProcessDPIAware()
 except Exception:
@@ -46,12 +45,6 @@ class BITMAPINFOHEADER(ctypes.Structure):
 class BITMAPINFO(ctypes.Structure):
     _fields_ = [('bmiHeader', BITMAPINFOHEADER), ('bmiColors', wintypes.DWORD * 3)]
 
-# Win32 Constants
-SM_XVIRTUALSCREEN = 76
-SM_YVIRTUALSCREEN = 77
-SM_CXVIRTUALSCREEN = 78
-SM_CYVIRTUALSCREEN = 79
-SM_CMONITORS = 80
 SRCCOPY = 0x00CC0020
 BI_RGB = 0
 
@@ -109,18 +102,18 @@ def enumerate_monitors() -> List[MonitorInfo]:
     user32.EnumDisplayMonitors(None, None, proc, 0)
 
     if not monitors:
-        # Fallback to primary screen
-        w = user32.GetSystemMetrics(0)
-        h = user32.GetSystemMetrics(1)
+        w = max(640, user32.GetSystemMetrics(0))
+        h = max(480, user32.GetSystemMetrics(1))
         monitors.append(MonitorInfo(0, "Display 1 (Primary)", 0, 0, w, h, True))
 
     return monitors
 
 class ScreenCapturer:
-    """Persistent GDI capture session with zero-copy memory buffers."""
+    """Persistent GDI capture session with zero-copy memory buffers and dynamic resolution adaptation."""
     def __init__(self, monitor_index: int = 0):
         self.monitors = enumerate_monitors()
         self.current_monitor_index = monitor_index
+        self.hdesktop = None
         self.hdc_screen = None
         self.hdc_mem = None
         self.hbmp = None
@@ -131,6 +124,7 @@ class ScreenCapturer:
         self.left = 0
         self.top = 0
         self._last_frame_hash = None
+        self._frame_count = 0
         self._init_session(monitor_index)
 
     def _init_session(self, monitor_index: int):
@@ -142,22 +136,19 @@ class ScreenCapturer:
         target = self.monitors[monitor_index]
         self.left = target.left
         self.top = target.top
-        self.width = target.width
-        self.height = target.height
+        self.width = max(100, target.width)
+        self.height = max(100, target.height)
 
-        # Setup BITMAPINFO for 32-bit BGRA top-down bitmap
         self.bmi = BITMAPINFO()
         self.bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
         self.bmi.bmiHeader.biWidth = self.width
-        self.bmi.bmiHeader.biHeight = -self.height  # Negative height = top-down
+        self.bmi.bmiHeader.biHeight = -self.height
         self.bmi.bmiHeader.biPlanes = 1
         self.bmi.bmiHeader.biBitCount = 32
         self.bmi.bmiHeader.biCompression = BI_RGB
 
-        # Pre-allocate buffer
         self.buf = ctypes.create_string_buffer(self.width * self.height * 4)
 
-        # Create persistent GDI contexts
         self.hdesktop = user32.GetDesktopWindow()
         self.hdc_screen = user32.GetDC(self.hdesktop)
         self.hdc_mem = gdi32.CreateCompatibleDC(self.hdc_screen)
@@ -169,16 +160,27 @@ class ScreenCapturer:
         if index != self.current_monitor_index and 0 <= index < len(self.monitors):
             self._init_session(index)
 
+    def check_resolution_change(self):
+        """Detect display resolution changes and reinitialize buffer."""
+        current_w = user32.GetSystemMetrics(0)
+        current_h = user32.GetSystemMetrics(1)
+        if self.current_monitor_index == 0 and (current_w != self.width or current_h != self.height):
+            self._init_session(0)
+
     def capture_jpeg(self, quality: int = 75, force: bool = False) -> Optional[Tuple[bytes, int, int]]:
         """
         Capture current frame and return (jpeg_bytes, width, height).
         Returns None if frame is identical to previous and force=False.
         """
+        self._frame_count += 1
+        if self._frame_count % 60 == 0:
+            self.check_resolution_change()
+
         if not self.hdc_mem or not self.hdc_screen:
             return None
 
-        # Blit from screen to persistent memory DC
-        gdi32.BitBlt(
+        # Blit screen into persistent memory DC
+        success = gdi32.BitBlt(
             self.hdc_mem,
             0, 0,
             self.width, self.height,
@@ -186,8 +188,11 @@ class ScreenCapturer:
             self.left, self.top,
             SRCCOPY
         )
+        if not success:
+            self._init_session(self.current_monitor_index)
+            return None
 
-        # Read pixels into buffer
+        # Extract bits
         gdi32.GetDIBits(
             self.hdc_mem,
             self.hbmp,
@@ -198,27 +203,33 @@ class ScreenCapturer:
             0
         )
 
-        # Quick sample hash for dirty detection (hash sample points across buffer)
+        # Dirty checking via sample hash
         raw_mv = memoryview(self.buf)
-        # Sample 1KB from start, middle, and end
-        sample = bytes(raw_mv[0:1024]) + bytes(raw_mv[len(raw_mv)//2:len(raw_mv)//2 + 1024]) + bytes(raw_mv[-1024:])
-        current_hash = hash(sample)
+        buf_len = len(raw_mv)
+        if buf_len >= 3072:
+            sample = bytes(raw_mv[0:1024]) + bytes(raw_mv[buf_len//2:buf_len//2 + 1024]) + bytes(raw_mv[-1024:])
+            current_hash = hash(sample)
+        else:
+            current_hash = hash(bytes(raw_mv))
 
         if not force and current_hash == self._last_frame_hash:
-            return None  # Screen unchanged
+            return None
 
         self._last_frame_hash = current_hash
 
-        # Convert to RGB image and encode
-        img = Image.frombuffer('RGBA', (self.width, self.height), self.buf, 'raw', 'BGRA', 0, 1)
-        rgb_img = img.convert('RGB')
-        
-        bio = io.BytesIO()
-        rgb_img.save(bio, format='JPEG', quality=quality, optimize=False)
-        return bio.getvalue(), self.width, self.height
+        # Encode JPEG
+        try:
+            img = Image.frombuffer('RGBA', (self.width, self.height), self.buf, 'raw', 'BGRA', 0, 1)
+            rgb_img = img.convert('RGB')
+            bio = io.BytesIO()
+            rgb_img.save(bio, format='JPEG', quality=max(10, min(95, quality)), optimize=False)
+            return bio.getvalue(), self.width, self.height
+        except Exception as e:
+            print(f"[Capture] JPEG encoding error: {e}")
+            return None
 
     def cleanup(self):
-        """Free GDI handles."""
+        """Free GDI handles safely."""
         if self.hbmp:
             gdi32.DeleteObject(self.hbmp)
             self.hbmp = None

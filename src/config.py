@@ -1,6 +1,7 @@
 """
 Configuration manager for MyRemotePC.
-Handles Machine ID generation, secure access code hashing, and persistent settings.
+Handles Machine ID generation, secure access code hashing, persistent settings,
+and environment variable overrides.
 """
 
 import json
@@ -8,13 +9,21 @@ import os
 import random
 import hashlib
 import secrets
+import sys
 from pathlib import Path
+from typing import Optional
 
-CONFIG_FILE = Path(__file__).resolve().parent.parent / "config.json"
+if getattr(sys, 'frozen', False):
+    APP_DIR = Path(sys.executable).resolve().parent
+else:
+    APP_DIR = Path(__file__).resolve().parent.parent
+
+CONFIG_FILE = APP_DIR / "config.json"
 
 DEFAULT_CONFIG = {
     "machine_id": "",
     "machine_name": "",
+    "access_code": "",
     "access_code_hash": "",
     "salt": "",
     "port": 8080,
@@ -40,7 +49,7 @@ def generate_machine_id() -> str:
 
 def generate_access_code() -> str:
     """Generate a readable 6-character random access code."""
-    alphabet = "abcdefghjkmnpqrstuvwxyz23456789"  # omit ambiguous characters (0, O, 1, l, i)
+    alphabet = "abcdefghjkmnpqrstuvwxyz23456789"
     return "".join(secrets.choice(alphabet) for _ in range(6))
 
 class ConfigManager:
@@ -49,6 +58,7 @@ class ConfigManager:
         self.data = dict(DEFAULT_CONFIG)
         self.current_plain_code = None
         self.load()
+        self.apply_env_overrides()
 
     def load(self):
         if self.config_path.exists():
@@ -59,7 +69,6 @@ class ConfigManager:
             except Exception as e:
                 print(f"[Config] Error loading {self.config_path}: {e}")
 
-        # Initialize missing fields
         modified = False
         if not self.data.get("machine_id"):
             self.data["machine_id"] = generate_machine_id()
@@ -71,7 +80,7 @@ class ConfigManager:
             modified = True
 
         if not self.data.get("access_code_hash"):
-            raw_code = self.data.get("access_code", generate_access_code())
+            raw_code = self.data.get("access_code") or generate_access_code()
             salt = secrets.token_hex(16)
             self.data["salt"] = salt
             self.data["access_code_hash"] = hash_access_code(raw_code, salt)
@@ -84,6 +93,29 @@ class ConfigManager:
         if modified:
             self.save()
 
+    def apply_env_overrides(self):
+        """Allow production environment variables to override file config."""
+        if os.getenv("MYREMOTEPC_HOST"):
+            self.data["host"] = os.getenv("MYREMOTEPC_HOST")
+        if os.getenv("MYREMOTEPC_PORT"):
+            try:
+                self.data["port"] = int(os.getenv("MYREMOTEPC_PORT"))
+            except ValueError:
+                pass
+        if os.getenv("MYREMOTEPC_TARGET_FPS"):
+            try:
+                self.data["target_fps"] = max(5, min(60, int(os.getenv("MYREMOTEPC_TARGET_FPS"))))
+            except ValueError:
+                pass
+        if os.getenv("MYREMOTEPC_JPEG_QUALITY"):
+            try:
+                self.data["jpeg_quality"] = max(20, min(95, int(os.getenv("MYREMOTEPC_JPEG_QUALITY"))))
+            except ValueError:
+                pass
+        if os.getenv("MYREMOTEPC_ACCESS_CODE"):
+            override_code = os.getenv("MYREMOTEPC_ACCESS_CODE").strip()
+            self.set_new_access_code(override_code, persist=False)
+
     def save(self):
         try:
             with open(self.config_path, "w", encoding="utf-8") as f:
@@ -93,20 +125,21 @@ class ConfigManager:
 
     def verify_access_code(self, code: str) -> bool:
         """Verify an entered access code against stored hash."""
-        if not code:
+        if not code or not isinstance(code, str):
             return False
-        # Also check current session plain code if just generated
         if self.current_plain_code and code.strip().lower() == self.current_plain_code.lower():
             return True
         entered_hash = hash_access_code(code.strip().lower(), self.data.get("salt", ""))
         return secrets.compare_digest(entered_hash, self.data.get("access_code_hash", ""))
 
-    def set_new_access_code(self, new_code: str):
+    def set_new_access_code(self, new_code: str, persist: bool = True):
         salt = secrets.token_hex(16)
         self.data["salt"] = salt
         self.data["access_code_hash"] = hash_access_code(new_code.strip().lower(), salt)
+        self.data["access_code"] = new_code.strip().lower()
         self.current_plain_code = new_code.strip().lower()
-        self.save()
+        if persist:
+            self.save()
 
     @property
     def machine_id(self) -> str:

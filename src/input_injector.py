@@ -2,12 +2,14 @@
 High-performance Win32 input injection engine for MyRemotePC.
 Translates normalized viewer pointer coordinates and browser keyboard events
 into native Windows mouse and keyboard events using user32.SendInput.
+Includes strict boundary validation, coordinate clamping, and sanitization.
 """
 
 import ctypes
 from ctypes import wintypes
+import math
 import time
-from typing import Optional
+from typing import Optional, Union, Any
 
 user32 = ctypes.windll.user32
 
@@ -92,89 +94,108 @@ VK_MAP = {
     "Backquote": 0xC0, "BracketLeft": 0xDB, "Backslash": 0xDC, "BracketRight": 0xDD, "Quote": 0xDE
 }
 
+def clamp_float(val: Any, min_val: float = 0.0, max_val: float = 1.0) -> float:
+    """Safely clamp a numeric input to [min_val, max_val] with NaN/Inf protection."""
+    try:
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return min_val
+        return max(min_val, min(max_val, f))
+    except (TypeError, ValueError):
+        return min_val
+
 class InputInjector:
-    """Dispatches synthetic mouse and keyboard events into Windows."""
+    """Dispatches validated synthetic mouse and keyboard events into Windows."""
     def __init__(self):
+        self.v_left = 0
+        self.v_top = 0
+        self.v_width = 1920
+        self.v_height = 1080
+        self.refresh_screen_metrics()
+
+    def refresh_screen_metrics(self):
         self.v_left = user32.GetSystemMetrics(76)   # SM_XVIRTUALSCREEN
         self.v_top = user32.GetSystemMetrics(77)    # SM_YVIRTUALSCREEN
         self.v_width = user32.GetSystemMetrics(78)  # SM_CXVIRTUALSCREEN
         self.v_height = user32.GetSystemMetrics(79) # SM_CYVIRTUALSCREEN
-        if self.v_width == 0:
-            self.v_width = user32.GetSystemMetrics(0)
-            self.v_height = user32.GetSystemMetrics(1)
+        if self.v_width <= 0:
+            self.v_width = max(1, user32.GetSystemMetrics(0))
+            self.v_height = max(1, user32.GetSystemMetrics(1))
             self.v_left = 0
             self.v_top = 0
 
-    def refresh_screen_metrics(self):
-        self.v_left = user32.GetSystemMetrics(76)
-        self.v_top = user32.GetSystemMetrics(77)
-        self.v_width = user32.GetSystemMetrics(78)
-        self.v_height = user32.GetSystemMetrics(79)
-
     def mouse_move(self, norm_x: float, norm_y: float, monitor_left: int = 0, monitor_top: int = 0, monitor_width: int = 1920, monitor_height: int = 1080):
-        """Move cursor to normalized coordinate (0.0 to 1.0) on the target monitor."""
-        abs_x = monitor_left + int(norm_x * monitor_width)
-        abs_y = monitor_top + int(norm_y * monitor_height)
+        """Move cursor to normalized coordinate clamped strictly to [0.0, 1.0]."""
+        cx = clamp_float(norm_x, 0.0, 1.0)
+        cy = clamp_float(norm_y, 0.0, 1.0)
 
-        # Normalize to 0..65535 across virtual desktop
+        abs_x = monitor_left + int(cx * monitor_width)
+        abs_y = monitor_top + int(cy * monitor_height)
+
+        self.refresh_screen_metrics()
         norm_vx = int(((abs_x - self.v_left) * 65535) / max(1, self.v_width))
         norm_vy = int(((abs_y - self.v_top) * 65535) / max(1, self.v_height))
 
         inp = INPUT()
         inp.type = INPUT_MOUSE
-        inp.u.mi.dx = norm_vx
-        inp.u.mi.dy = norm_vy
+        inp.u.mi.dx = max(0, min(65535, norm_vx))
+        inp.u.mi.dy = max(0, min(65535, norm_vy))
         inp.u.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
         user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
 
     def mouse_button(self, button: str, action: str):
-        """
-        Handle mouse button actions.
-        button: 'left', 'right', 'middle'
-        action: 'down', 'up', 'click', 'dblclick'
-        """
+        """Handle validated mouse button actions."""
+        if not isinstance(button, str) or not isinstance(action, str):
+            return
+
+        btn = button.lower()
+        act = action.lower()
+
         flag_down = 0
         flag_up = 0
-        if button == 'left':
+        if btn == 'left':
             flag_down = MOUSEEVENTF_LEFTDOWN
             flag_up = MOUSEEVENTF_LEFTUP
-        elif button == 'right':
+        elif btn == 'right':
             flag_down = MOUSEEVENTF_RIGHTDOWN
             flag_up = MOUSEEVENTF_RIGHTUP
-        elif button == 'middle':
+        elif btn == 'middle':
             flag_down = MOUSEEVENTF_MIDDLEDOWN
             flag_up = MOUSEEVENTF_MIDDLEUP
         else:
             return
 
-        if action == 'down':
+        if act == 'down':
             self._send_mouse_flag(flag_down)
-        elif action == 'up':
+        elif act == 'up':
             self._send_mouse_flag(flag_up)
-        elif action == 'click':
+        elif act == 'click':
             self._send_mouse_flag(flag_down)
             time.sleep(0.01)
             self._send_mouse_flag(flag_up)
-        elif action == 'dblclick':
+        elif act == 'dblclick':
             self._send_mouse_flag(flag_down)
             self._send_mouse_flag(flag_up)
-            time.sleep(0.05)
+            time.sleep(0.04)
             self._send_mouse_flag(flag_down)
             self._send_mouse_flag(flag_up)
 
     def mouse_wheel(self, delta_y: float, delta_x: float = 0.0):
-        """Scroll wheel vertically or horizontally."""
-        if delta_y != 0:
+        """Scroll wheel vertically or horizontally with clamped magnitude."""
+        dy = clamp_float(delta_y, -10.0, 10.0)
+        dx = clamp_float(delta_x, -10.0, 10.0)
+
+        if dy != 0:
             inp = INPUT()
             inp.type = INPUT_MOUSE
             inp.u.mi.dwFlags = MOUSEEVENTF_WHEEL
-            inp.u.mi.mouseData = int(-delta_y * 120)  # Browser delta is inverted
+            inp.u.mi.mouseData = int(-dy * 120)
             user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
-        if delta_x != 0:
+        if dx != 0:
             inp = INPUT()
             inp.type = INPUT_MOUSE
             inp.u.mi.dwFlags = MOUSEEVENTF_HWHEEL
-            inp.u.mi.mouseData = int(delta_x * 120)
+            inp.u.mi.mouseData = int(dx * 120)
             user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
 
     def _send_mouse_flag(self, flag: int):
@@ -184,17 +205,19 @@ class InputInjector:
         user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
 
     def key_event(self, code: str, action: str, key_char: Optional[str] = None):
-        """
-        Inject a key down or key up event.
-        code: browser KeyboardEvent.code (e.g. 'KeyA', 'Enter')
-        action: 'down' or 'up'
-        """
+        """Inject a sanitized key down or key up event."""
+        if not isinstance(code, str) or not isinstance(action, str):
+            return
+
+        act = action.lower()
+        if act not in ('down', 'up'):
+            return
+
         vk = VK_MAP.get(code)
         if vk:
             flags = 0
-            if action == 'up':
+            if act == 'up':
                 flags |= KEYEVENTF_KEYUP
-            # Extended keys (arrows, home, end, etc.)
             if code in ("ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown", "Insert", "Delete"):
                 flags |= KEYEVENTF_EXTENDEDKEY
 
@@ -204,13 +227,16 @@ class InputInjector:
             inp.u.ki.wScan = user32.MapVirtualKeyW(vk, 0)
             inp.u.ki.dwFlags = flags
             user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
-        elif key_char and len(key_char) == 1:
-            # Fallback to Unicode char injection
-            self.type_unicode_char(key_char, action)
+        elif key_char and isinstance(key_char, str) and len(key_char) == 1:
+            self.type_unicode_char(key_char, act)
 
     def type_unicode_char(self, char: str, action: str = 'press'):
-        """Type any Unicode character directly using KEYEVENTF_UNICODE."""
-        utf16_val = ord(char)
+        """Type Unicode character directly using KEYEVENTF_UNICODE."""
+        try:
+            utf16_val = ord(char)
+        except (TypeError, ValueError):
+            return
+
         if action in ('down', 'press'):
             inp = INPUT()
             inp.type = INPUT_KEYBOARD

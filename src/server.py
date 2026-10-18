@@ -1,16 +1,19 @@
 """
 MyRemotePC Core Host Server.
-Provides asynchronous HTTP endpoints, static asset hosting, and high-throughput
-full-duplex WebSocket binary desktop streaming and input injection.
+Provides asynchronous HTTP endpoints, static asset hosting, security rate limiting,
+session lifecycle management, and high-throughput full-duplex WebSocket binary streaming.
 """
 
 import asyncio
+from collections import defaultdict
 import json
 import os
+import signal
 import struct
+import sys
 import time
 from pathlib import Path
-from typing import Set, Dict, Any, Optional
+from typing import Set, Dict, Any, Optional, List, Tuple
 
 from aiohttp import web
 import aiohttp
@@ -20,20 +23,49 @@ from .capture import ScreenCapturer, enumerate_monitors
 from .input_injector import InputInjector
 from .clipboard import get_clipboard_text, set_clipboard_text
 
-STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+# Resolve static directory relative to module or frozen bundle
+if getattr(sys, 'frozen', False):
+    STATIC_DIR = Path(sys._MEIPASS) / "static" if hasattr(sys, '_MEIPASS') else Path(__file__).resolve().parent.parent / "static"
+else:
+    STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
+class RateLimiter:
+    """In-memory IP-based rate limiter with sliding window."""
+    def __init__(self, max_attempts: int = 5, window_seconds: int = 60):
+        self.max_attempts = max_attempts
+        self.window_seconds = window_seconds
+        self.attempts: Dict[str, List[float]] = defaultdict(list)
+
+    def is_allowed(self, ip: str) -> Tuple[bool, int]:
+        now = time.time()
+        # Clean older entries
+        self.attempts[ip] = [t for t in self.attempts[ip] if now - t < self.window_seconds]
+        if len(self.attempts[ip]) >= self.max_attempts:
+            retry_after = int(self.window_seconds - (now - self.attempts[ip][0]))
+            return False, max(1, retry_after)
+        return True, 0
+
+    def record_failure(self, ip: str):
+        self.attempts[ip].append(time.time())
+
+    def reset(self, ip: str):
+        self.attempts.pop(ip, None)
 
 class RemoteServer:
-    def __init__(self):
-        self.config = ConfigManager()
+    def __init__(self, config: Optional[ConfigManager] = None):
+        self.config = config or ConfigManager()
         self.capturer = ScreenCapturer(monitor_index=0)
         self.injector = InputInjector()
         self.app = web.Application()
+        self.rate_limiter = RateLimiter(max_attempts=5, window_seconds=60)
+        
         self.active_websockets: Set[web.WebSocketResponse] = set()
         self.authenticated_sessions: Dict[str, float] = {}  # token -> expiry
         self.streaming_tasks: Dict[web.WebSocketResponse, asyncio.Task] = {}
         
         self.target_fps = self.config.target_fps
         self.jpeg_quality = self.config.jpeg_quality
+        self.is_running = True
         
         self.setup_routes()
 
@@ -49,11 +81,18 @@ class RemoteServer:
         self.app.router.add_static('/static', STATIC_DIR, show_index=False)
         self.app.router.add_get('/', self.handle_index)
 
+    def get_client_ip(self, request: web.Request) -> str:
+        # Check standard proxy headers if present, else remote peer
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+        return request.remote or "unknown"
+
     async def handle_index(self, request: web.Request) -> web.Response:
         index_file = STATIC_DIR / "index.html"
         if index_file.exists():
             return web.FileResponse(index_file)
-        return web.Response(text="MyRemotePC Viewer - UI not found", status=404)
+        return web.Response(text="MyRemotePC Viewer - UI assets missing", status=404)
 
     async def handle_status(self, request: web.Request) -> web.Response:
         monitors = [m.to_dict() for m in self.capturer.monitors]
@@ -74,13 +113,23 @@ class RemoteServer:
         return web.json_response({"monitors": monitors, "current": self.capturer.current_monitor_index})
 
     async def handle_auth(self, request: web.Request) -> web.Response:
+        client_ip = self.get_client_ip(request)
+        allowed, retry_after = self.rate_limiter.is_allowed(client_ip)
+        if not allowed:
+            return web.json_response(
+                {"success": False, "error": f"Too many failed attempts. Try again in {retry_after} seconds."},
+                status=429,
+                headers={"Retry-After": str(retry_after)}
+            )
+
         try:
             data = await request.json()
         except Exception:
-            return web.json_response({"error": "Invalid JSON"}, status=400)
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
 
         access_code = data.get("access_code", "")
         if self.config.verify_access_code(access_code):
+            self.rate_limiter.reset(client_ip)
             import secrets
             token = secrets.token_urlsafe(32)
             self.authenticated_sessions[token] = time.time() + 86400  # 24h
@@ -90,13 +139,15 @@ class RemoteServer:
                 "machine_id": self.config.machine_id,
                 "machine_name": self.config.machine_name
             })
+
+        self.rate_limiter.record_failure(client_ip)
         return web.json_response({"success": False, "error": "Invalid access code"}, status=401)
 
     async def handle_settings(self, request: web.Request) -> web.Response:
         try:
             data = await request.json()
         except Exception:
-            return web.json_response({"error": "Invalid JSON"}, status=400)
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
 
         if "fps" in data:
             self.target_fps = max(5, min(60, int(data["fps"])))
@@ -113,17 +164,14 @@ class RemoteServer:
         })
 
     async def handle_websocket(self, request: web.Request) -> web.WebSocketResponse:
-        ws = web.WebSocketResponse(heartbeat=15.0, max_msg_size=10*1024*1024)
+        ws = web.WebSocketResponse(heartbeat=15.0, max_msg_size=5*1024*1024)
         await ws.prepare(request)
 
-        # Check authentication query param or wait for auth message
         token = request.query.get("token", "")
-        is_authenticated = token in self.authenticated_sessions
+        is_authenticated = bool(token and token in self.authenticated_sessions)
 
         self.active_websockets.add(ws)
-        print(f"[WebSocket] Client connected: {request.remote}")
 
-        # Start streaming task once authenticated
         stream_task: Optional[asyncio.Task] = None
         if is_authenticated:
             stream_task = asyncio.create_task(self.stream_loop(ws))
@@ -139,7 +187,6 @@ class RemoteServer:
 
                     cmd_type = cmd.get("type", "")
 
-                    # Handle initial auth if not authenticated via URL
                     if not is_authenticated:
                         if cmd_type == "auth":
                             code = cmd.get("access_code", "")
@@ -153,7 +200,7 @@ class RemoteServer:
                                 await ws.send_json({"type": "auth_result", "success": False, "error": "Invalid access code"})
                         continue
 
-                    # Authenticated Command Processing
+                    # Authenticated Controls
                     if cmd_type == "mouse_move":
                         nx = float(cmd.get("x", 0.0))
                         ny = float(cmd.get("y", 0.0))
@@ -213,7 +260,6 @@ class RemoteServer:
                         await ws.send_json({"type": "pong", "t": t_client, "server_t": time.time()})
 
                 elif msg.type == aiohttp.WSMsgType.ERROR:
-                    print(f"[WebSocket] Error: {ws.exception()}")
                     break
 
         finally:
@@ -221,35 +267,32 @@ class RemoteServer:
                 stream_task.cancel()
             self.streaming_tasks.pop(ws, None)
             self.active_websockets.discard(ws)
-            print(f"[WebSocket] Client disconnected: {request.remote}")
 
         return ws
 
     async def stream_loop(self, ws: web.WebSocketResponse):
-        """Asynchronous frame capture and binary transmission loop."""
-        print("[Stream] Screen stream started for viewer")
-        # Send initial screen info
-        await ws.send_json({
-            "type": "screen_init",
-            "width": self.capturer.width,
-            "height": self.capturer.height,
-            "monitors": [m.to_dict() for m in self.capturer.monitors],
-            "current_monitor": self.capturer.current_monitor_index
-        })
+        """Asynchronous screen capture and binary transmission loop."""
+        try:
+            await ws.send_json({
+                "type": "screen_init",
+                "width": self.capturer.width,
+                "height": self.capturer.height,
+                "monitors": [m.to_dict() for m in self.capturer.monitors],
+                "current_monitor": self.capturer.current_monitor_index
+            })
+        except Exception:
+            return
 
-        frame_count = 0
         last_force_time = time.time()
 
-        while not ws.closed:
+        while not ws.closed and self.is_running:
             t_start = time.time()
             interval = 1.0 / max(5, self.target_fps)
 
-            # Send a keyframe every 2 seconds even if screen is static
             force_keyframe = (t_start - last_force_time) > 2.0
             if force_keyframe:
                 last_force_time = t_start
 
-            # Capture frame in thread executor to keep event loop free for input
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(
                 None,
@@ -261,38 +304,32 @@ class RemoteServer:
             if result is not None and not ws.closed:
                 jpeg_bytes, w, h = result
                 timestamp_ms = int(time.time() * 1000) & 0xFFFFFFFF
-                
-                # Binary Header:
-                # 4 bytes: Magic 'RPC1' (0x52504331)
-                # 2 bytes: Width (uint16)
-                # 2 bytes: Height (uint16)
-                # 4 bytes: Timestamp ms (uint32)
-                # Followed by raw JPEG bytes
                 header = struct.pack('>4sHHI', b'RPC1', w, h, timestamp_ms)
                 packet = header + jpeg_bytes
                 
                 try:
                     await ws.send_bytes(packet)
-                    frame_count += 1
-                except Exception as e:
-                    print(f"[Stream] Send error: {e}")
+                except Exception:
                     break
 
             elapsed = time.time() - t_start
             sleep_time = max(0.001, interval - elapsed)
             await asyncio.sleep(sleep_time)
 
-        print("[Stream] Screen stream ended")
+    def shutdown(self):
+        """Clean shutdown handler."""
+        self.is_running = False
+        self.capturer.cleanup()
 
 def run_app():
     server = RemoteServer()
     host = server.config.host
     port = server.config.port
     print("=" * 60)
-    print(f"  MYREMOTEPC HOST SERVER ACTIVE")
+    print("  MYREMOTEPC HOST SERVER ACTIVE")
     print(f"  Machine ID   : {server.config.machine_id}")
     print(f"  Machine Name : {server.config.machine_name}")
-    print(f"  Access Code  : {server.config.current_plain_code or '[Saved Hash]'}")
+    print(f"  Access Code  : {server.config.current_plain_code or '[Protected Hash]'}")
     print(f"  Local URL    : http://localhost:{port}")
     import socket
     try:
@@ -304,7 +341,10 @@ def run_app():
     except Exception:
         pass
     print("=" * 60)
-    web.run_app(server.app, host=host, port=port, print=False)
+    try:
+        web.run_app(server.app, host=host, port=port, print=False)
+    finally:
+        server.shutdown()
 
 if __name__ == "__main__":
     run_app()
