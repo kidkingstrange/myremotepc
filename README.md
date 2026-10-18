@@ -1,34 +1,43 @@
 # MyRemotePC — Modern, Practical & Ultra-Low Latency Remote Access
 
 [![Release](https://img.shields.io/badge/Release-v1.0.0-blue.svg)](dist/releases/v1.0.0/)
-[![Tests](https://img.shields.io/badge/Tests-18%20Passed-brightgreen.svg)](tests/)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20x64-lightgrey.svg)](dist/releases/v1.0.0/)
+[![Tests](https://img.shields.io/badge/Tests-20%20Passed-brightgreen.svg)](tests/)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20x64%20%7C%20macOS-lightgrey.svg)](dist/releases/v1.0.0/)
+[![Installer](https://img.shields.io/badge/Installer-1--Click%20Setup%20EXE-blueviolet.svg)](dist/releases/v1.0.0/MyRemotePC-Setup-v1.0.0.exe)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-**MyRemotePC** is a production-ready, ultra-low latency, and cost-effective remote desktop access system. Built from the ground up as a modern alternative to legacy remote control tools, it delivers hardware-accelerated screen streaming and interactive control at **$0 cloud cost** with zero subscriptions and zero mandatory third-party accounts.
+**MyRemotePC** is a commercial-grade, production-ready, ultra-low latency remote desktop access system. Built from the ground up as a modern alternative to legacy remote control tools, it delivers hardware-accelerated screen streaming and interactive control at up to 60 FPS with **$0 cloud infrastructure overhead**, zero vendor lock-in, and an effortless 1-click installer for non-technical users.
 
 ---
 
 ## 🌟 Key Highlights
 
-- **Standalone Native Binary**: Zero Python or runtime installations needed on the host. Simply run `MyRemotePC.exe`.
+- **1-Click Commercial Setup Installer**: Seamless standard Windows Setup wizard (`MyRemotePC-Setup-v1.0.0.exe`). Installs without requiring admin elevation, creates Desktop & Start Menu shortcuts, and enables optional auto-start on boot.
+- **Standalone Native Binary**: Zero Python or runtime installations needed on the host. Simply launch `MyRemotePC.exe`.
 - **Zero-Install Web Viewer**: Client runs in any modern browser (Chrome, Edge, Firefox, Safari) on any PC, Mac, Linux, iPad, iPhone, or Android device.
-- **Direct GPU-Accelerated Frame Capture**: Sub-10ms GDI capture (`BitBlt` + `GetDIBits`) delivering up to 60 FPS with adaptive JPEG compression and dirty frame hashing.
-- **Sub-Millisecond Input Synthesis**: Complete mouse, wheel, keyboard, and Windows shortcut control via native `user32.SendInput`.
+- **Direct Hardware-Accelerated Capture**: Sub-10ms capture (Win32 GDI / macOS Quartz) delivering up to 60 FPS with adaptive JPEG compression and dirty frame hashing.
+- **Sub-Millisecond Input Synthesis**: Complete mouse, wheel, keyboard, and Windows shortcut control via native OS dispatchers (`user32.SendInput` on Windows / `CGEvent` on macOS).
 - **Hardened Security**: PBKDF2-SHA256 password hashing (100,000 iterations), sliding-window IP rate limiting, input boundary clamping, and 2MB clipboard payload protection.
 - **Zero-Cost Operation ($0 Cloud Bills)**: Works directly over LAN, peer-to-peer via free mesh VPNs (Tailscale), or instant public tunnels (Cloudflare Tunnel).
+- **Built-in Marketing & Landing Page**: Includes a sleek SaaS product landing page with pricing ($20/mo), feature comparisons, and instant download buttons at `/landing`.
 
 ---
 
 ## ⚡ Quick Start
 
-### For End-Users (Standalone Release)
-1. Download or extract the release archive:
-   👉 [`dist/releases/v1.0.0/MyRemotePC-v1.0.0-windows-x64.zip`](file:///c:/Users/david/OneDrive/Desktop/MyRemotePC/dist/releases/v1.0.0/MyRemotePC-v1.0.0-windows-x64.zip)
-2. Double-click **`start_host.bat`** (or `MyRemotePC.exe`).
-3. Note your **Machine ID** and **Access Code** printed in the console.
-4. Open **`open_viewer.bat`** (or go to `http://localhost:8080`) from this PC, or `http://<YOUR_LAN_IP>:8080` from any other device on your Wi-Fi network.
-5. Enter your Access Code and click **Connect to Remote Desktop**.
+### For End-Users (1-Click Windows Setup)
+1. Download the graphical installer:
+   👉 **`MyRemotePC-Setup-v1.0.0.exe`** (or portable ZIP: [`MyRemotePC-v1.0.0-windows-x64.zip`](file:///c:/Users/david/OneDrive/Desktop/MyRemotePC/dist/releases/v1.0.0/MyRemotePC-v1.0.0-windows-x64.zip))
+2. Double-click the installer and complete the setup wizard.
+3. Launch **MyRemotePC** from your Desktop or Start Menu.
+4. Note your **Machine ID** and **Access Code** displayed on the host.
+5. On your phone, tablet, or another computer, open your browser and browse to `http://<YOUR_HOST_IP>:8080` (or your Cloudflare tunnel link).
+6. Enter your Access Code and click **Connect to Remote Desktop**.
+
+### For Portable / USB Drive Use
+1. Extract `MyRemotePC-v1.0.0-windows-x64.zip`.
+2. Double-click `start_host.bat` (or `MyRemotePC.exe`).
+3. Double-click `open_viewer.bat` to launch the client viewer.
 
 ### For Developers (Running from Source)
 ```powershell

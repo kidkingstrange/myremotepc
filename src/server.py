@@ -77,9 +77,13 @@ class RemoteServer:
         self.app.router.add_post('/api/settings', self.handle_settings)
         self.app.router.add_get('/ws', self.handle_websocket)
 
-        # Static Assets
+        # Static Assets & Marketing
         self.app.router.add_static('/static', STATIC_DIR, show_index=False)
         self.app.router.add_get('/', self.handle_index)
+        self.app.router.add_get('/landing', self.handle_landing)
+        self.app.router.add_get('/pricing', self.handle_landing)
+        self.app.router.add_get('/download/windows', self.handle_download_windows)
+        self.app.router.add_get('/download/zip', self.handle_download_zip)
 
     def get_client_ip(self, request: web.Request) -> str:
         # Check standard proxy headers if present, else remote peer
@@ -93,6 +97,47 @@ class RemoteServer:
         if index_file.exists():
             return web.FileResponse(index_file)
         return web.Response(text="MyRemotePC Viewer - UI assets missing", status=404)
+
+    async def handle_landing(self, request: web.Request) -> web.Response:
+        landing_file = STATIC_DIR / "landing.html"
+        if landing_file.exists():
+            return web.FileResponse(landing_file)
+        # Fallback to index if landing page not found
+        return await self.handle_index(request)
+
+    async def handle_download_windows(self, request: web.Request) -> web.Response:
+        installer_candidates = [
+            Path(__file__).resolve().parent.parent / "dist" / "releases" / "v1.0.0" / "MyRemotePC-Setup-v1.0.0.exe",
+            Path(sys.executable).parent / "MyRemotePC-Setup-v1.0.0.exe" if getattr(sys, 'frozen', False) else None,
+            Path(sys.executable).parent / "releases" / "v1.0.0" / "MyRemotePC-Setup-v1.0.0.exe" if getattr(sys, 'frozen', False) else None
+        ]
+        for candidate in installer_candidates:
+            if candidate and candidate.exists():
+                return web.FileResponse(
+                    candidate,
+                    headers={
+                        "Content-Disposition": 'attachment; filename="MyRemotePC-Setup-v1.0.0.exe"',
+                        "Content-Type": "application/octet-stream"
+                    }
+                )
+        # Fallback redirect to official GitHub Release direct download URL
+        raise web.HTTPFound("https://github.com/kidkingstrange/myremotepc/releases/download/v1.0.0/MyRemotePC-Setup-v1.0.0.exe")
+
+    async def handle_download_zip(self, request: web.Request) -> web.Response:
+        zip_candidates = [
+            Path(__file__).resolve().parent.parent / "dist" / "releases" / "v1.0.0" / "MyRemotePC-v1.0.0-windows-x64.zip",
+            Path(sys.executable).parent / "MyRemotePC-v1.0.0-windows-x64.zip" if getattr(sys, 'frozen', False) else None
+        ]
+        for candidate in zip_candidates:
+            if candidate and candidate.exists():
+                return web.FileResponse(
+                    candidate,
+                    headers={
+                        "Content-Disposition": 'attachment; filename="MyRemotePC-v1.0.0-windows-x64.zip"',
+                        "Content-Type": "application/zip"
+                    }
+                )
+        raise web.HTTPFound("https://github.com/kidkingstrange/myremotepc/releases/download/v1.0.0/MyRemotePC-v1.0.0-windows-x64.zip")
 
     async def handle_status(self, request: web.Request) -> web.Response:
         monitors = [m.to_dict() for m in self.capturer.monitors]

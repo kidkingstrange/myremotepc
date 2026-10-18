@@ -97,3 +97,19 @@ async def test_static_index(client):
     assert resp.status == 200
     text = await resp.text()
     assert "MyRemotePC" in text
+
+@pytest.mark.asyncio
+async def test_static_landing(client):
+    cli, server = client
+    resp = await cli.get('/landing')
+    assert resp.status == 200
+    text = await resp.text()
+    assert "MyRemotePC" in text
+    assert "$20" in text
+
+@pytest.mark.asyncio
+async def test_download_routes(client):
+    cli, server = client
+    # /download/windows should either return 200 (if local installer exists) or redirect 302 to GitHub release
+    resp = await cli.get('/download/windows', allow_redirects=False)
+    assert resp.status in (200, 302)

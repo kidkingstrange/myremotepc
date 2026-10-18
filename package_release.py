@@ -88,10 +88,16 @@ def package():
 
     # 8. Generate SHA256 checksums
     checksum_lines = []
-    for item in [RELEASE_DIR / "MyRemotePC.exe", zip_path]:
-        sha = calculate_sha256(item)
-        checksum_lines.append(f"{sha}  {item.name}")
-        print(f"SHA-256 [{item.name}]: {sha}")
+    items_to_check = [
+        RELEASE_DIR / "MyRemotePC.exe",
+        zip_path,
+        RELEASE_DIR / f"MyRemotePC-Setup-{RELEASE_VERSION}.exe"
+    ]
+    for item in items_to_check:
+        if item.exists():
+            sha = calculate_sha256(item)
+            checksum_lines.append(f"{sha}  {item.name}")
+            print(f"SHA-256 [{item.name}]: {sha}")
 
     with open(RELEASE_DIR / "SHA256SUMS.txt", "w", encoding="utf-8") as f:
         f.write("\n".join(checksum_lines) + "\n")
