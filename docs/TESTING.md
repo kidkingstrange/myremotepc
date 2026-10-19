@@ -84,7 +84,7 @@ finally:
    - Submit empty access code -> Blocked by HTML5 validation.
    - Submit incorrect code -> Shows "Invalid access code" message.
    - Submit 5 incorrect codes in 60s -> Returns HTTP 429 Too Many Requests.
-   - Submit correct code (`123456`) -> Smooth transition to remote desktop canvas.
+   - Submit correct code (displayed on host startup) -> Smooth transition to remote desktop canvas.
 2. **Interactive Control**:
    - Click, drag, right-click, and scroll on canvas -> Verified accurate cursor positioning on host.
    - Type in text editors -> Verified alphanumeric and special characters register accurately.

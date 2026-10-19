@@ -99,14 +99,6 @@ class RemoteClient {
       await this.authenticate(code);
     });
 
-    const quickFill = document.getElementById('quickFillBtn');
-    if (quickFill) {
-      quickFill.addEventListener('click', () => {
-        this.accessCodeInput.value = '123456';
-        this.authenticate('123456');
-      });
-    }
-
     // Toolbar dropdown toggles
     this.setupDropdown(this.monitorBtn, this.monitorDropdown);
     this.setupDropdown(this.qualityBtn, this.qualityDropdown);

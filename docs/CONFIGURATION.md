@@ -10,16 +10,18 @@ The application automatically creates `config.json` next to the executable on it
 
 ```json
 {
-    "machine_id": "186-072-757",
+    "machine_id": "849-204-183",
     "machine_name": "HostPC",
-    "access_code": "123456",
     "access_code_hash": "d7cf47637a2d8bac25047b5103954dcbb06969ee0e86bf170ae463bafdc9a53f",
     "salt": "1b718587444ef779abfbdede3ef6db4b",
     "port": 8080,
     "host": "0.0.0.0",
     "target_fps": 30,
     "jpeg_quality": 75,
-    "enable_clipboard": true
+    "enable_clipboard": true,
+    "enable_tls": false,
+    "cert_file": "",
+    "key_file": ""
 }
 ```
 
@@ -29,8 +31,7 @@ The application automatically creates `config.json` next to the executable on it
 | :--- | :--- | :--- | :--- |
 | `machine_id` | String | Auto-generated 9-digit | Unique identifier assigned to this host machine. |
 | `machine_name` | String | System Hostname | Human-readable alias shown in viewer header. |
-| `access_code` | String | Auto-generated 6-char | Plaintext code displayed on startup for convenient user access. |
-| `access_code_hash`| String | PBKDF2-SHA256 hex | 100,000 iterations PBKDF2 hash of the access code. |
+| `access_code_hash`| String | PBKDF2-SHA256 hex | 100,000 iterations PBKDF2 hash of the unique access code generated on first run. |
 | `salt` | String | 16-byte hex | Cryptographic random salt used for password hashing. |
 | `port` | Integer | `8080` | TCP port the HTTP and WebSocket servers listen on. |
 | `host` | String | `"0.0.0.0"` | Network interface to bind (`0.0.0.0` binds to all LAN interfaces; `127.0.0.1` restricts to localhost). |

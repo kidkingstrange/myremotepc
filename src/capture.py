@@ -6,6 +6,7 @@ Includes multi-monitor enumeration, dynamic resolution change detection, and ada
 
 import io
 import sys
+import threading
 import time
 from typing import List, Dict, Optional, Tuple
 from PIL import Image
@@ -45,6 +46,37 @@ if sys.platform == 'win32':
         user32.SetProcessDPIAware()
     except Exception:
         pass
+
+    # Declare explicit 64-bit handle types for Windows API
+    user32.OpenInputDesktop.restype = ctypes.c_void_p
+    user32.OpenInputDesktop.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    user32.SetThreadDesktop.restype = wintypes.BOOL
+    user32.SetThreadDesktop.argtypes = [ctypes.c_void_p]
+    user32.CloseDesktop.restype = wintypes.BOOL
+    user32.CloseDesktop.argtypes = [ctypes.c_void_p]
+    user32.GetUserObjectInformationW.restype = wintypes.BOOL
+    user32.GetUserObjectInformationW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+
+    user32.GetDesktopWindow.restype = ctypes.c_void_p
+    user32.GetDC.restype = ctypes.c_void_p
+    user32.GetDC.argtypes = [ctypes.c_void_p]
+    user32.ReleaseDC.restype = ctypes.c_int
+    user32.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+
+    gdi32.CreateCompatibleDC.restype = ctypes.c_void_p
+    gdi32.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
+    gdi32.CreateCompatibleBitmap.restype = ctypes.c_void_p
+    gdi32.CreateCompatibleBitmap.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    gdi32.SelectObject.restype = ctypes.c_void_p
+    gdi32.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    gdi32.DeleteObject.restype = ctypes.c_int
+    gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
+    gdi32.DeleteDC.restype = ctypes.c_int
+    gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
+    gdi32.BitBlt.restype = ctypes.c_int
+    gdi32.BitBlt.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, wintypes.DWORD]
+    gdi32.GetDIBits.restype = ctypes.c_int
+    gdi32.GetDIBits.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint]
 
     class RECT(ctypes.Structure):
         _fields_ = [('left', wintypes.LONG), ('top', wintypes.LONG), ('right', wintypes.LONG), ('bottom', wintypes.LONG)]
@@ -93,6 +125,7 @@ if sys.platform == 'win32':
 
     class WinScreenCapturer:
         def __init__(self, monitor_index: int = 0):
+            self._lock = threading.Lock()
             self.monitors = _win_enumerate_monitors()
             self.current_monitor_index = monitor_index
             self.hdesktop = None
@@ -105,12 +138,65 @@ if sys.platform == 'win32':
             self.height = 0
             self.left = 0
             self.top = 0
+            self._current_hdesk = None
+            self._current_desk_name = ""
             self._last_frame_hash = None
             self._frame_count = 0
-            self._init_session(monitor_index)
+            self._is_locked = False
+            with self._lock:
+                self._init_session_locked(monitor_index)
 
-        def _init_session(self, monitor_index: int):
-            self.cleanup()
+        def _get_desktop_name(self, hdesk) -> str:
+            if not hdesk:
+                return ""
+            try:
+                buf = ctypes.create_unicode_buffer(256)
+                needed = wintypes.DWORD()
+                if user32.GetUserObjectInformationW(hdesk, 2, buf, ctypes.sizeof(buf), ctypes.byref(needed)):
+                    return buf.value
+            except Exception:
+                pass
+            return ""
+
+        def _ensure_input_desktop(self) -> bool:
+            """
+            Attach thread to active input desktop.
+            Properly closes duplicate HDESK handles to eliminate Windows handle exhaustion.
+            Returns True if the desktop attachment changed, requiring GDI DC recreation.
+            """
+            try:
+                # 0x01FF covers DESKTOP_SWITCHDESKTOP, READOBJECTS, WRITEOBJECTS, etc.
+                hdesk = user32.OpenInputDesktop(0, False, 0x01FF)
+                if hdesk:
+                    desk_name = self._get_desktop_name(hdesk)
+                    if not self._current_hdesk or (desk_name and desk_name != self._current_desk_name):
+                        user32.SetThreadDesktop(hdesk)
+                        if self._current_hdesk:
+                            try:
+                                user32.CloseDesktop(self._current_hdesk)
+                            except Exception:
+                                pass
+                        self._current_hdesk = hdesk
+                        self._current_desk_name = desk_name
+                        self._is_locked = False
+                        return True
+                    else:
+                        # Same active desktop: close redundant handle immediately to prevent leak
+                        try:
+                            user32.CloseDesktop(hdesk)
+                        except Exception:
+                            pass
+                        return False
+                else:
+                    self._is_locked = True
+                    return False
+            except Exception:
+                self._is_locked = True
+                return False
+
+        def _init_session_locked(self, monitor_index: int):
+            self._cleanup_locked()
+            self._ensure_input_desktop()
             self.monitors = _win_enumerate_monitors()
             if monitor_index < 0 or monitor_index >= len(self.monitors):
                 monitor_index = 0
@@ -131,60 +217,130 @@ if sys.platform == 'win32':
 
             self.buf = ctypes.create_string_buffer(self.width * self.height * 4)
             self.hdesktop = user32.GetDesktopWindow()
-            self.hdc_screen = user32.GetDC(self.hdesktop)
-            self.hdc_mem = gdi32.CreateCompatibleDC(self.hdc_screen)
-            self.hbmp = gdi32.CreateCompatibleBitmap(self.hdc_screen, self.width, self.height)
-            gdi32.SelectObject(self.hdc_mem, self.hbmp)
+            self.hdc_screen = user32.GetDC(0)
+            if self.hdc_screen:
+                self.hdc_mem = gdi32.CreateCompatibleDC(self.hdc_screen)
+                if self.hdc_mem:
+                    self.hbmp = gdi32.CreateCompatibleBitmap(self.hdc_screen, self.width, self.height)
+                    if self.hbmp:
+                        gdi32.SelectObject(self.hdc_mem, self.hbmp)
+
+        def _init_session(self, monitor_index: int):
+            with self._lock:
+                self._init_session_locked(monitor_index)
 
         def select_monitor(self, index: int):
-            if index != self.current_monitor_index and 0 <= index < len(self.monitors):
-                self._init_session(index)
+            with self._lock:
+                if 0 <= index < len(self.monitors):
+                    if index != self.current_monitor_index:
+                        self._init_session_locked(index)
+                else:
+                    if self.current_monitor_index != 0:
+                        self._init_session_locked(0)
 
         def check_resolution_change(self):
-            current_w = user32.GetSystemMetrics(0)
-            current_h = user32.GetSystemMetrics(1)
-            if self.current_monitor_index == 0 and (current_w != self.width or current_h != self.height):
-                self._init_session(0)
+            with self._lock:
+                monitors = _win_enumerate_monitors()
+                if len(monitors) != len(self.monitors):
+                    self._init_session_locked(min(self.current_monitor_index, max(0, len(monitors) - 1)))
+                    return
+                idx = min(self.current_monitor_index, len(monitors) - 1)
+                new_target = monitors[idx]
+                if (new_target.width != self.width or new_target.height != self.height or
+                    new_target.left != self.left or new_target.top != self.top):
+                    self._init_session_locked(idx)
 
-        def capture_jpeg(self, quality: int = 75, force: bool = False) -> Optional[Tuple[bytes, int, int]]:
+        def _generate_lock_placeholder(self) -> Tuple[bytes, int, int]:
+            """Create an informational placeholder frame when desktop is locked / UAC."""
+            w = max(640, self.width)
+            h = max(480, self.height)
+            try:
+                from PIL import Image, ImageDraw
+                img = Image.new("RGB", (w, h), color=(18, 24, 38))
+                draw = ImageDraw.Draw(img)
+                msg1 = "DESKTOP LOCKED / SESSION INACTIVE"
+                msg2 = "Unlock host machine or accept UAC elevation prompt to resume view."
+                draw.text((max(20, w // 2 - 160), max(20, h // 2 - 20)), msg1, fill=(239, 68, 68))
+                draw.text((max(20, w // 2 - 240), max(20, h // 2 + 10)), msg2, fill=(156, 163, 175))
+                bio = io.BytesIO()
+                img.save(bio, format="JPEG", quality=75)
+                return bio.getvalue(), w, h
+            except Exception:
+                img = Image.new("RGB", (w, h), color=(15, 15, 15))
+                bio = io.BytesIO()
+                img.save(bio, format="JPEG", quality=50)
+                return bio.getvalue(), w, h
+
+        def capture_jpeg(self, quality: int = 75, force: bool = False, force_keyframe: bool = False, **kwargs) -> Optional[Tuple[bytes, int, int]]:
+            effective_force = force or force_keyframe
             self._frame_count += 1
-            if self._frame_count % 60 == 0:
+            if self._frame_count % 60 == 0 or self._is_locked:
                 self.check_resolution_change()
 
-            if not self.hdc_mem or not self.hdc_screen:
-                return None
+            with self._lock:
+                # If desktop changed (e.g. unlock or session switch), re-init GDI session immediately
+                desktop_changed = self._ensure_input_desktop()
+                if desktop_changed:
+                    self._init_session_locked(self.current_monitor_index)
 
-            success = gdi32.BitBlt(self.hdc_mem, 0, 0, self.width, self.height, self.hdc_screen, self.left, self.top, SRCCOPY)
-            if not success:
-                self._init_session(self.current_monitor_index)
-                return None
+                # Try primary GDI zero-copy capture path
+                if self.hdc_mem and self.hdc_screen:
+                    success = gdi32.BitBlt(self.hdc_mem, 0, 0, self.width, self.height, self.hdc_screen, self.left, self.top, SRCCOPY)
+                    if success:
+                        gdi32.GetDIBits(self.hdc_mem, self.hbmp, 0, self.height, self.buf, ctypes.byref(self.bmi), 0)
+                        raw_mv = memoryview(self.buf)
+                        buf_len = len(raw_mv)
+                        if buf_len >= 3072:
+                            sample = bytes(raw_mv[0:1024]) + bytes(raw_mv[buf_len//2:buf_len//2 + 1024]) + bytes(raw_mv[-1024:])
+                            current_hash = hash(sample)
+                        else:
+                            current_hash = hash(bytes(raw_mv))
 
-            gdi32.GetDIBits(self.hdc_mem, self.hbmp, 0, self.height, self.buf, ctypes.byref(self.bmi), 0)
+                        if not effective_force and current_hash == self._last_frame_hash and not self._is_locked:
+                            return None
 
-            raw_mv = memoryview(self.buf)
-            buf_len = len(raw_mv)
-            if buf_len >= 3072:
-                sample = bytes(raw_mv[0:1024]) + bytes(raw_mv[buf_len//2:buf_len//2 + 1024]) + bytes(raw_mv[-1024:])
-                current_hash = hash(sample)
-            else:
-                current_hash = hash(bytes(raw_mv))
+                        self._last_frame_hash = current_hash
+                        self._is_locked = False
+                        try:
+                            img = Image.frombuffer('RGBA', (self.width, self.height), self.buf, 'raw', 'BGRA', 0, 1)
+                            rgb_img = img.convert('RGB')
+                            bio = io.BytesIO()
+                            rgb_img.save(bio, format='JPEG', quality=max(10, min(95, quality)), optimize=False)
+                            return bio.getvalue(), self.width, self.height
+                        except Exception as e:
+                            print(f"[Capture] GDI buffer conversion error: {e}")
 
-            if not force and current_hash == self._last_frame_hash:
-                return None
-
-            self._last_frame_hash = current_hash
-
+            # Fallback path via ImageGrab
             try:
-                img = Image.frombuffer('RGBA', (self.width, self.height), self.buf, 'raw', 'BGRA', 0, 1)
-                rgb_img = img.convert('RGB')
+                from PIL import ImageGrab
+                if self.current_monitor_index == 0:
+                    img = ImageGrab.grab()
+                else:
+                    target = self.monitors[min(self.current_monitor_index, len(self.monitors) - 1)]
+                    bbox = (target.left, target.top, target.left + target.width, target.top + target.height)
+                    img = ImageGrab.grab(bbox=bbox)
+
+                w, h = img.size
+                sample = img.tobytes()[::8192]
+                current_hash = hash(sample)
+                if not effective_force and current_hash == self._last_frame_hash and not self._is_locked:
+                    return None
+                self._last_frame_hash = current_hash
+                self._is_locked = False
+
                 bio = io.BytesIO()
-                rgb_img.save(bio, format='JPEG', quality=max(10, min(95, quality)), optimize=False)
-                return bio.getvalue(), self.width, self.height
-            except Exception as e:
-                print(f"[Capture] JPEG encoding error: {e}")
+                img.save(bio, format='JPEG', quality=max(10, min(95, quality)), optimize=False)
+                return bio.getvalue(), w, h
+            except Exception:
+                # Both GDI and ImageGrab failed (desktop locked, UAC prompt, or session switched)
+                if not self._is_locked or effective_force:
+                    self._is_locked = True
+                    lock_frame, lw, lh = self._generate_lock_placeholder()
+                    self._last_frame_hash = hash(lock_frame)
+                    return lock_frame, lw, lh
                 return None
 
-        def cleanup(self):
+        def _cleanup_locked(self):
             if self.hbmp:
                 gdi32.DeleteObject(self.hbmp)
                 self.hbmp = None
@@ -192,8 +348,19 @@ if sys.platform == 'win32':
                 gdi32.DeleteDC(self.hdc_mem)
                 self.hdc_mem = None
             if self.hdc_screen:
-                user32.ReleaseDC(self.hdesktop, self.hdc_screen)
+                user32.ReleaseDC(0, self.hdc_screen)
                 self.hdc_screen = None
+            if self._current_hdesk:
+                try:
+                    user32.CloseDesktop(self._current_hdesk)
+                except Exception:
+                    pass
+                self._current_hdesk = None
+                self._current_desk_name = ""
+
+        def cleanup(self):
+            with self._lock:
+                self._cleanup_locked()
 
         def __del__(self):
             self.cleanup()
@@ -248,7 +415,8 @@ class MacScreenCapturer:
         if 0 <= index < len(self.monitors):
             self._init_session(index)
 
-    def capture_jpeg(self, quality: int = 75, force: bool = False) -> Optional[Tuple[bytes, int, int]]:
+    def capture_jpeg(self, quality: int = 75, force: bool = False, force_keyframe: bool = False, **kwargs) -> Optional[Tuple[bytes, int, int]]:
+        effective_force = force or force_keyframe
         try:
             if self._sct:
                 # Target monitor index in mss is 1-based (0 is all)
@@ -264,7 +432,7 @@ class MacScreenCapturer:
             # Sample hash for dirty check
             sample = img.tobytes()[::8192]
             current_hash = hash(sample)
-            if not force and current_hash == self._last_frame_hash:
+            if not effective_force and current_hash == self._last_frame_hash:
                 return None
             self._last_frame_hash = current_hash
 

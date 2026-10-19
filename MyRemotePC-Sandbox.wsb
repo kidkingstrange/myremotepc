@@ -1,0 +1,19 @@
+<Configuration>
+  <VGpu>Default</VGpu>
+  <Networking>Default</Networking>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>C:\Users\david\OneDrive\Desktop\MyRemotePC\dist\releases\v1.0.0</HostFolder>
+      <SandboxFolder>C:\Users\WDAGUtilityAccount\Desktop\MyRemotePC-Release</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>C:\Users\david\OneDrive\Desktop\MyRemotePC\tests</HostFolder>
+      <SandboxFolder>C:\Users\WDAGUtilityAccount\Desktop\Scripts</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>powershell.exe -ExecutionPolicy Bypass -NoExit -File "C:\Users\WDAGUtilityAccount\Desktop\Scripts\sandbox_verifier.ps1"</Command>
+  </LogonCommand>
+</Configuration>

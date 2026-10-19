@@ -1,12 +1,12 @@
 {
-    "machine_id": "000-000-000",
-    "machine_name": "MyHostPC",
-    "access_code": "changeme123",
-    "access_code_hash": "",
-    "salt": "",
+    "machine_id": "",
+    "machine_name": "",
     "port": 8080,
     "host": "0.0.0.0",
     "target_fps": 30,
     "jpeg_quality": 75,
-    "enable_clipboard": true
+    "enable_clipboard": true,
+    "enable_tls": false,
+    "cert_file": "",
+    "key_file": ""
 }

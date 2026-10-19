@@ -63,7 +63,7 @@ Tailscale creates a secure, private encrypted WireGuard mesh network connecting 
 ## 3. Production Hardening Checklist for Public Access
 
 When exposing MyRemotePC to the public internet:
-- [x] Change the default access code from `123456` to a strong custom passphrase in `config.json`.
+- [x] Unique high-entropy access code is automatically generated on first run (with PBKDF2-SHA256 hashing).
 - [x] Rate limiting is enabled by default to block brute-force attempts.
 - [x] Ensure the host is served over HTTPS / WSS when using public tunnels.
 - [x] Keep `config.json` restricted to authorized Windows user accounts.

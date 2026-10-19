@@ -23,5 +23,14 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
+# IDE & Editor folders
+.claude/
+.vscode/
+.idea/
+
 # Local configs with custom credentials (keep config.example.json tracked)
+config.json
 *.local.json
+*.pem
+*.key
+*.crt
